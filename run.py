@@ -34,13 +34,13 @@ if __name__ == '__main__':
 
     # forecasting task
     parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
-    parser.add_argument('--label_len', type=int, default=48, help='start token length') # no longer needed in inverted Transformers
+    parser.add_argument('--label_len', type=int, default=48, help='start token length') 
     parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length')
 
     # model define
     parser.add_argument('--enc_in', type=int, default=7, help='encoder input size')
     parser.add_argument('--dec_in', type=int, default=7, help='decoder input size')
-    parser.add_argument('--c_out', type=int, default=7, help='output size') # applicable on arbitrary number of variates in inverted Transformers
+    parser.add_argument('--c_out', type=int, default=7, help='output size') 
     parser.add_argument('--d_model', type=int, default=512, help='dimension of model')
     parser.add_argument('--n_heads', type=int, default=8, help='num of heads')
     parser.add_argument('--e_layers', type=int, default=2, help='num of encoder layers')
@@ -76,7 +76,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_multi_gpu', action='store_true', help='use multiple gpus', default=False)
     parser.add_argument('--devices', type=str, default='0,1,2,3', help='device ids of multile gpus')
 
-    # 
+     
     parser.add_argument('--exp_name', type=str, required=False, default='MTSF',
                         help='experiemnt name, options:[MTSF]')
     parser.add_argument('--channel_independence', type=bool, default=False, help='whether to use channel_independence mechanism')
