@@ -4,3 +4,6 @@ pip install -r requirements.txt
 function helloWorld() {
   console.log("Hello, world!");
 }
+function helloWorld() {
+  console.log("Hello, world!");
+}
