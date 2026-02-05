@@ -8,7 +8,10 @@ class PositionalEmbedding(nn.Module):
         super(PositionalEmbedding, self).__init__()
         # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model).float()
-        pe.require_grad = False
+        #pe.require_grad = False
+        
+        pe.requires_grad = False            
+        #PositionalEmbedding 与 FixedEmbedding）。这能避免张量被误标记为可训练或引发警告。2025.09.18
 
         position = torch.arange(0, max_len).float().unsqueeze(1)
         div_term = (torch.arange(0, d_model, 2).float()
@@ -45,7 +48,11 @@ class FixedEmbedding(nn.Module):
         super(FixedEmbedding, self).__init__()
 
         w = torch.zeros(c_in, d_model).float()
-        w.require_grad = False
+        #w.require_grad = False
+
+        w.requires_grad = False
+        #PositionalEmbedding 与 FixedEmbedding）。这能避免张量被误标记为可训练或引发警告。2025.09.18
+
 
         position = torch.arange(0, c_in).float().unsqueeze(1)
         div_term = (torch.arange(0, d_model, 2).float()
@@ -104,40 +111,100 @@ class TimeFeatureEmbedding(nn.Module):
         return self.embed(x)
 
 
-class DataEmbedding(nn.Module):
-    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
-        super(DataEmbedding, self).__init__()
+class LearnedPositionalEmbedding(nn.Module):
+    def __init__(self, max_len, d_model):
+        super().__init__()
+        self.pe = nn.Embedding(max_len, d_model)
+        nn.init.trunc_normal_(self.pe.weight, std=0.02)
+    def forward(self, x):
+        L = x.size(1)
+        idx = torch.arange(L, device=x.device).long().unsqueeze(0)  # [1,L]
+        return self.pe(idx)                                   #/新增片段 2025.09.18
 
+
+class DataEmbedding(nn.Module):
+    #def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
+    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1,
+                 pos_type='sin', max_len=5000):#这块是改进的   2025.09.18
+    
+        super(DataEmbedding, self).__init__()
+        
         self.value_embedding = TokenEmbedding(c_in=c_in, d_model=d_model)
-        self.position_embedding = PositionalEmbedding(d_model=d_model)
+
+        #以下为更新
+        self.pos_type = pos_type
+        if pos_type == 'sin':
+            self.position_embedding = PositionalEmbedding(d_model=d_model)
+ 
+        elif pos_type == 'learned':
+            self.position_embedding = LearnedPositionalEmbedding(max_len, d_model)
+
+        elif pos_type in ('none', 'rope'):
+            self.position_embedding = None
+
+        else:
+            raise ValueError("pos_type must be 'sin'|'learned'|'none'|'rope'")
+        #self.position_embedding = PositionalEmbedding(d_model=d_model)
+       
         self.temporal_embedding = TemporalEmbedding(d_model=d_model, embed_type=embed_type,
                                                     freq=freq) if embed_type != 'timeF' else TimeFeatureEmbedding(
             d_model=d_model, embed_type=embed_type, freq=freq)
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x, x_mark):
-        if x_mark is None:
-            x = self.value_embedding(x) + self.position_embedding(x)
-        else:
-            x = self.value_embedding(
-                x) + self.temporal_embedding(x_mark) + self.position_embedding(x)
-        return self.dropout(x)
-
-
-class DataEmbedding_inverted(nn.Module):
-    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
-        super(DataEmbedding_inverted, self).__init__()
-        self.value_embedding = nn.Linear(c_in, d_model)
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, x, x_mark):
-        x = x.permute(0, 2, 1)
-        # x: [Batch Variate Time]
+        #if x_mark is None:
+        #    x = self.value_embedding(x) + self.position_embedding(x)
+        #else:
+        #    x = self.value_embedding(
+        #        x) + self.temporal_embedding(x_mark) + self.position_embedding(x)
+        #return self.dropout(x)                        
         if x_mark is None:
             x = self.value_embedding(x)
         else:
-            # the potential to take covariates (e.g. timestamps) as tokens
-            x = self.value_embedding(torch.cat([x, x_mark.permute(0, 2, 1)], 1)) 
-        # x: [Batch Variate d_model]
-        return self.dropout(x)
+            x = self.value_embedding(x) + self.temporal_embedding(x_mark)
+        if self.position_embedding is not None:
+            x = x + self.position_embedding(x)  # pos_type='rope'时这里为None
+        return self.dropout(x)  #这快也需要修改 2025.09.18
 
+
+
+
+
+
+class DataEmbedding_inverted(nn.Module):
+    #def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
+    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1,
+                 n_vars=None, use_vpe=False):             #这快也需要修改 2025.09.18
+        super(DataEmbedding_inverted, self).__init__()
+        self.value_embedding = nn.Linear(c_in, d_model)
+        self.dropout = nn.Dropout(p=dropout)
+        
+        #下面的都是新的 2025.09.18
+        self.use_vpe = use_vpe
+        self.n_vars = n_vars
+        if use_vpe:
+            assert n_vars is not None, "use_vpe=True 时需提供 n_vars"
+            self.var_index_emb = nn.Embedding(n_vars, d_model)
+            self.register_buffer("var_ids_buf", torch.arange(n_vars, dtype=torch.long), persistent=False)
+
+
+    def forward(self, x, x_mark):
+        x = x.permute(0, 2, 1)  # [B, N, L]    2025.09.18
+        x = self.value_embedding(x)  # [B, N, E] 2025.09.18
+        #x = x.permute(0, 2, 1)
+        # x: [Batch Variate Time]
+        
+        
+        #if x_mark is None:
+        #    x = self.value_embedding(x)
+        #else:
+            # the potential to take covariates (e.g. timestamps) as tokens
+        #    x = self.value_embedding(torch.cat([x, x_mark.permute(0, 2, 1)], 1)) 
+        # x: [Batch Variate d_model]
+        #return self.dropout(x)
+        if self.use_vpe:
+            B, N, _ = x.shape
+            var_ids = self.var_ids_buf.unsqueeze(0).expand(B, -1)  # [B,N]
+            x = x + self.var_index_emb(var_ids)                     # ★V-PE：变量token的身份编码
+        return self.dropout(x)       #这快也需要修改 2025.09.18
+        #这样 V-PE 完全在 embedding 层解决（不改注意力）；而时间分支的位置由 RoPE 在注意力里承担（非对称PE）。最新研究建议在时间/变量两类 token 上采用差异化编码，并用双分支框架融合，这正是我们这里的设计。
