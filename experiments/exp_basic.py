@@ -1,39 +1,14 @@
 import os
 import torch
-from model import Transformer, Informer, Reformer, Flowformer, Flashformer, fusioformer, fuformer, fuformerc, fuformercsol, tTransformer, newTransformer, vtformer, vtformer1, vtformer2, vtformerlog, vtformerlog1, VTformer, MVTformer, MVTformernew, \
-    iTransformer, iInformer, iReformer, iFlowformer, iFlashformer, MVTformer, MVTformernew
+from model import MVTformer
 
 
 class Exp_Basic(object):
     def __init__(self, args):
         self.args = args
         self.model_dict = {
-            'Transformer': Transformer,
-            'Informer': Informer,
-            'Reformer': Reformer,
-            'Flowformer': Flowformer,
-            'Flashformer': Flashformer,
-            'fusioformer': fusioformer,
-            'fuformer': fuformer,
-            'fuformerc': fuformerc,
-            'fuformercsol': fuformercsol,
-            'iTransformer': iTransformer,
-            'iInformer': iInformer,
-            'iReformer': iReformer,
-            'iFlowformer': iFlowformer,
-            'iFlashformer': iFlashformer,
-            'tTransformer': tTransformer,
-            'newTransformer': newTransformer,
-            'vtformer': vtformer,
-            'vtformer1': vtformer1,   
-            'vtformer2': vtformer2, 
-            'vtformerlog': vtformerlog,  
-            'vtformerlog1': vtformerlog1,  
-            'VTformer': VTformer, 
             'MVTformer': MVTformer, 
-            'MVTformernew': MVTformernew,
-            
-            
+                       
                       
         }
         self.device = self._acquire_device()

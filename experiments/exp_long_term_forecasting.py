@@ -26,7 +26,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
     def _get_data(self, flag):
         data_set, data_loader = data_provider(self.args, flag)
-        if isinstance(data_set, np.ndarray):#确保数据加载时即为 PyTorch 张量并在 GPU 上：
+        if isinstance(data_set, np.ndarray):
             data_set = torch.from_numpy(data_set).float().to(self.device)
         return data_set, data_loader
 
@@ -69,27 +69,17 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                #batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
 
-                #pred = outputs.detach().cpu()
-                #true = batch_y.detach().cpu()
-
-                #loss = criterion(pred, true)
-
-                #total_loss.append(loss)
-                # 计算损失仍使用 PyTorch 张量
+                
                 loss = criterion(outputs, batch_y)
                 total_loss.append(loss)
         
-        # 使用 torch.mean 替代 np.average
-        #total_loss = torch.tensor(total_loss, device=self.device)
-        #total_loss = torch.mean(total_loss)
-        total_loss = torch.stack(total_loss).mean().item()  # 直接堆叠并计算均值
+       
+        total_loss = torch.stack(total_loss).mean().item()  
         self.model.train()
-        #return total_loss.item()  # 返回标量值
-        #total_loss = np.average(total_loss)
-        #self.model.train()
+        
         return total_loss
 
     def train(self, setting):
@@ -97,8 +87,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
 
-        # 确保 num_workers=0
-        #assert train_loader.num_workers == 0, "num_workers must be 0 for GPU-only data storage"
+       
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
@@ -146,10 +135,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                        #batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                        
                         batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
                         loss = criterion(outputs, batch_y)
-                        #train_loss.append(loss.item())
+                        
                         train_loss.append(loss)
                 else:
                     if self.args.output_attention:
@@ -159,10 +148,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                    #batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                   
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
                     loss = criterion(outputs, batch_y)
-                    #train_loss.append(loss.item())
+                   
                     train_loss.append(loss)
 
 
@@ -183,12 +172,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     model_optim.step()
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time), flush=True)
-            #train_loss = np.average(train_loss)
-            #vali_loss = self.vali(vali_data, vali_loader, criterion)
-            #test_loss = self.vali(test_data, test_loader, criterion)
-            # 使用 torch.mean 替代 np.average
-            #train_loss = torch.tensor(train_loss, device=self.device)
-            #train_loss = torch.mean(train_loss)
+            
             train_loss = torch.stack(train_loss).mean().item()
             vali_loss = self.vali(vali_data, vali_loader, criterion)
             test_loss = self.vali(test_data, test_loader, criterion)
@@ -203,7 +187,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
-            # get_cka(self.args, setting, self.model, train_loader, self.device, epoch)
+            
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
@@ -254,50 +238,37 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                #batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
                 
                 
                 
-                #outputs = outputs.detach().cpu().numpy()
-                #batch_y = batch_y.detach().cpu().numpy()
+              
                 if test_data.scale and self.args.inverse:
-                    #shape = outputs.shape
-                    #outputs = test_data.inverse_transform(outputs.squeeze(0)).reshape(shape)
-                    #batch_y = test_data.inverse_transform(batch_y.squeeze(0)).reshape(shape)
-                    outputs = test_data.inverse_transform(outputs)  # 需确保支持张量
+                    
+                    outputs = test_data.inverse_transform(outputs)  
                     batch_y = test_data.inverse_transform(batch_y)
                 
-                # 定义 pred 和 true，保持 GPU 张量
-                #pred = outputs
-                #true = batch_y
-
-                #preds.append(pred)
-                #trues.append(true)
+                
                 preds.append(outputs)
                 trues.append(batch_y)
 
                 if i % 20 == 0:
-                    #input = batch_x.detach().cpu().numpy()
+                   
                     input = batch_x
                     if test_data.scale and self.args.inverse:
-                        #shape = input.shape
-                        #input = test_data.inverse_transform(input.squeeze(0)).reshape(shape)
+                        
                         input = test_data.inverse_transform(input)
-                    #gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
-                    #pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
-                    #visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
+                    
                     gt = torch.cat((input[0, :, -1], batch_y[0, :, -1]), dim=0).cpu().numpy()
                     pd = torch.cat((input[0, :, -1], outputs[0, :, -1]), dim=0).cpu().numpy()
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
-        #preds = np.array(preds)
-        #trues = np.array(trues)
+        
         preds = torch.stack(preds)
         trues = torch.stack(trues)
         print('test shape:', preds.shape, trues.shape)
-        #preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
-        #trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
+        
         preds = preds.view(-1, preds.shape[-2], preds.shape[-1])
         trues = trues.view(-1, trues.shape[-2], trues.shape[-1])
         print('test shape:', preds.shape, trues.shape)
@@ -307,7 +278,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
-        mae, mse, rmse, mape, mspe = metric(preds, trues)# 需确保 metric 支持张量
+        mae, mse, rmse, mape, mspe = metric(preds, trues)
         print('mse:{}, mae:{}'.format(mse, mae))
         f = open("result_long_term_forecast.txt", 'a')
         f.write(setting + "  \n")
@@ -316,10 +287,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         f.write('\n')
         f.close()
 
-        #np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe]))
-        #np.save(folder_path + 'pred.npy', preds)
-        #np.save(folder_path + 'true.npy', trues)
-        # 保存指标，修复错误
+       
         np.save(folder_path + 'metrics.npy', np.array([mae.item(), mse.item(), rmse.item(), mape.item(), mspe.item()]))
         np.save(folder_path + 'pred.npy', preds.cpu().numpy())
         np.save(folder_path + 'true.npy', trues.cpu().numpy())
@@ -346,7 +314,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
                 # decoder input
-                #dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
+                
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float().to(self.device)
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
@@ -363,13 +331,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 outputs = outputs.detach().cpu().numpy()
                 if pred_data.scale and self.args.inverse:
-                    #shape = outputs.shape
-                    #outputs = pred_data.inverse_transform(outputs.squeeze(0)).reshape(shape)
+                    
                     outputs = pred_data.inverse_transform(outputs)
                 preds.append(outputs)
 
-        #preds = np.array(preds)
-        #preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
+       
         preds = torch.stack(preds).view(-1, preds.shape[-2], preds.shape[-1])
 
         # result save
