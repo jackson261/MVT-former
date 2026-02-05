@@ -8,14 +8,19 @@ from torch import optim
 import os
 import time
 import warnings
+import pdb
 import numpy as np
+import random
 
 warnings.filterwarnings('ignore')
 
 
-class Exp_Long_Term_Forecast(Exp_Basic):
+# train on partial variate data and test on the full variates, used for two types of experiments:
+# (1) Generalize on unseen variate (Figure 5 of our paper)
+# (2) Efficient training strategy  (Figure 8 of our paper)
+class Exp_Long_Term_Forecast_Partial(Exp_Basic):
     def __init__(self, args):
-        super(Exp_Long_Term_Forecast, self).__init__(args)
+        super(Exp_Long_Term_Forecast_Partial, self).__init__(args)
 
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
@@ -26,8 +31,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
     def _get_data(self, flag):
         data_set, data_loader = data_provider(self.args, flag)
-        if isinstance(data_set, np.ndarray):#确保数据加载时即为 PyTorch 张量并在 GPU 上：
-            data_set = torch.from_numpy(data_set).float().to(self.device)
         return data_set, data_loader
 
     def _select_optimizer(self):
@@ -38,19 +41,26 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         criterion = nn.MSELoss()
         return criterion
 
-    def vali(self, vali_data, vali_loader, criterion):
+    def vali(self, vali_data, vali_loader, criterion, partial_train=False):
         total_loss = []
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
+
                 if 'PEMS' in self.args.data or 'Solar' in self.args.data:
                     batch_x_mark = None
                     batch_y_mark = None
                 else:
                     batch_x_mark = batch_x_mark.float().to(self.device)
                     batch_y_mark = batch_y_mark.float().to(self.device)
+
+                if partial_train:  # we train models with only partial variates from the dataset
+                    partial_start = self.args.partial_start_index
+                    partial_end = min(self.args.enc_in + partial_start, batch_x.shape[-1])
+                    batch_x = batch_x[:, :, partial_start:partial_end]
+                    batch_y = batch_y[:, :, partial_start:partial_end]
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
@@ -65,31 +75,33 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 else:
                     if self.args.output_attention:
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                    elif self.args.channel_independence:
+                        B, Tx, N = batch_x.shape
+                        _, Ty, _ = dec_inp.shape
+                        if batch_x_mark == None:
+                            outputs = self.model(batch_x.permute(0, 2, 1).reshape(B * N, Tx, 1), batch_x_mark, \
+                                                 dec_inp.permute(0, 2, 1).reshape(B * N, Ty, 1), batch_y_mark).reshape(
+                                B, N, -1).permute(0, 2, 1)
+                        else:
+                            outputs = self.model(batch_x.permute(0, 2, 1).reshape(B * N, Tx, 1),
+                                                 batch_x_mark.repeat(N, 1, 1), \
+                                                 dec_inp.permute(0, 2, 1).reshape(B * N, Ty, 1),
+                                                 batch_y_mark.repeat(N, 1, 1)) \
+                                .reshape(B, N, -1).permute(0, 2, 1)
                     else:
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                #batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
 
-                #pred = outputs.detach().cpu()
-                #true = batch_y.detach().cpu()
+                pred = outputs.detach().cpu()
+                true = batch_y.detach().cpu()
 
-                #loss = criterion(pred, true)
+                loss = criterion(pred, true)
 
-                #total_loss.append(loss)
-                # 计算损失仍使用 PyTorch 张量
-                loss = criterion(outputs, batch_y)
                 total_loss.append(loss)
-        
-        # 使用 torch.mean 替代 np.average
-        #total_loss = torch.tensor(total_loss, device=self.device)
-        #total_loss = torch.mean(total_loss)
-        total_loss = torch.stack(total_loss).mean().item()  # 直接堆叠并计算均值
+        total_loss = np.average(total_loss)
         self.model.train()
-        #return total_loss.item()  # 返回标量值
-        #total_loss = np.average(total_loss)
-        #self.model.train()
         return total_loss
 
     def train(self, setting):
@@ -97,8 +109,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
 
-        # 确保 num_workers=0
-        #assert train_loader.num_workers == 0, "num_workers must be 0 for GPU-only data storage"
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
             os.makedirs(path)
@@ -132,6 +142,21 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     batch_x_mark = batch_x_mark.float().to(self.device)
                     batch_y_mark = batch_y_mark.float().to(self.device)
 
+                # Variate Generalization training: 
+                # We train with partial variates (args.enc_in < number of dataset variates)
+                # and test the obtained model directly on all variates.
+                partial_start = self.args.partial_start_index
+                partial_end = min(self.args.enc_in + partial_start, batch_x.shape[-1])
+                batch_x = batch_x[:, :, partial_start:partial_end]
+                batch_y = batch_y[:, :, partial_start:partial_end]
+                # Efficient training strategy: randomly choose part of the variates
+                # and only train the model with selected variates in each batch 
+                if self.args.efficient_training:
+                    _, _, N = batch_x.shape
+                    index = np.stack(random.sample(range(N), N))[-self.args.enc_in:]
+                    batch_x = batch_x[:, :, index]
+                    batch_y = batch_y[:, :, index]
+
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
@@ -146,31 +171,41 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                         f_dim = -1 if self.args.features == 'MS' else 0
                         outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                        #batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                        batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+                        batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                         loss = criterion(outputs, batch_y)
-                        #train_loss.append(loss.item())
-                        train_loss.append(loss)
+                        train_loss.append(loss.item())
                 else:
                     if self.args.output_attention:
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                    elif self.args.channel_independence:
+                        B, Tx, N = batch_x.shape
+                        _, Ty, _ = dec_inp.shape
+                        if batch_x_mark == None:
+                            outputs = self.model(batch_x.permute(0, 2, 1).reshape(B * N, Tx, 1), batch_x_mark, \
+                                                 dec_inp.permute(0, 2, 1).reshape(B * N, Ty, 1), batch_y_mark).reshape(
+                                B, N, -1).permute(0, 2, 1)
+                        else:
+                            a = batch_x.permute(0, 2, 1)
+                            b = batch_x.permute(0, 2, 1).reshape(B * N, Tx, 1)
+                            outputs = self.model(batch_x.permute(0, 2, 1).reshape(B * N, Tx, 1),
+                                                 batch_x_mark.repeat(N, 1, 1), \
+                                                 dec_inp.permute(0, 2, 1).reshape(B * N, Ty, 1),
+                                                 batch_y_mark.repeat(N, 1, 1)) \
+                                .reshape(B, N, -1).permute(0, 2, 1)
                     else:
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                     f_dim = -1 if self.args.features == 'MS' else 0
                     outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                    #batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                    batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
+                    batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                     loss = criterion(outputs, batch_y)
-                    #train_loss.append(loss.item())
-                    train_loss.append(loss)
-
+                    train_loss.append(loss.item())
 
                 if (i + 1) % 100 == 0:
-                    print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()), flush=True)
+                    print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
                     speed = (time.time() - time_now) / iter_count
                     left_time = speed * ((self.args.train_epochs - epoch) * train_steps - i)
-                    print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time), flush=True)
+                    print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
                     iter_count = 0
                     time_now = time.time()
 
@@ -182,28 +217,19 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     loss.backward()
                     model_optim.step()
 
-            print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time), flush=True)
-            #train_loss = np.average(train_loss)
-            #vali_loss = self.vali(vali_data, vali_loader, criterion)
-            #test_loss = self.vali(test_data, test_loader, criterion)
-            # 使用 torch.mean 替代 np.average
-            #train_loss = torch.tensor(train_loss, device=self.device)
-            #train_loss = torch.mean(train_loss)
-            train_loss = torch.stack(train_loss).mean().item()
-            vali_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
-
+            print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
+            train_loss = np.average(train_loss)
+            vali_loss = self.vali(vali_data, vali_loader, criterion, partial_train=True)
+            test_loss = self.vali(test_data, test_loader, criterion, partial_train=False)
 
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss, test_loss), flush=True)
+                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
-                print("Early stopping", flush=True)
+                print("Early stopping")
                 break
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
-
-            # get_cka(self.args, setting, self.model, train_loader, self.device, epoch)
 
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
@@ -211,6 +237,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         return self.model
 
     def test(self, setting, test=0):
+
         test_data, test_loader = self._get_data(flag='test')
         if test:
             print('loading model')
@@ -225,9 +252,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         self.model.eval()
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
+                # During model inference, test the obtained model directly on all variates.
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
-
                 if 'PEMS' in self.args.data or 'Solar' in self.args.data:
                     batch_x_mark = None
                     batch_y_mark = None
@@ -248,58 +275,52 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 else:
                     if self.args.output_attention:
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-
+                    elif self.args.channel_independence:  # compare the result with channel_independence
+                        B, Tx, N = batch_x.shape
+                        _, Ty, _ = dec_inp.shape
+                        if batch_x_mark == None:
+                            outputs = self.model(batch_x.permute(0, 2, 1).reshape(B * N, Tx, 1), batch_x_mark, \
+                                                 dec_inp.permute(0, 2, 1).reshape(B * N, Ty, 1), batch_y_mark).reshape(
+                                B, N, -1).permute(0, 2, 1)
+                        else:
+                            outputs = self.model(batch_x.permute(0, 2, 1).reshape(B * N, Tx, 1),
+                                                 batch_x_mark.repeat(N, 1, 1), \
+                                                 dec_inp.permute(0, 2, 1).reshape(B * N, Ty, 1),
+                                                 batch_y_mark.repeat(N, 1, 1)) \
+                                .reshape(B, N, -1).permute(0, 2, 1)
                     else:
+                        # directly test the trained model on all variates without fine-tuning.
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                #batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:]
-                
-                
-                
-                #outputs = outputs.detach().cpu().numpy()
-                #batch_y = batch_y.detach().cpu().numpy()
+                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+                outputs = outputs.detach().cpu().numpy()
+                batch_y = batch_y.detach().cpu().numpy()
                 if test_data.scale and self.args.inverse:
-                    #shape = outputs.shape
-                    #outputs = test_data.inverse_transform(outputs.squeeze(0)).reshape(shape)
-                    #batch_y = test_data.inverse_transform(batch_y.squeeze(0)).reshape(shape)
-                    outputs = test_data.inverse_transform(outputs)  # 需确保支持张量
-                    batch_y = test_data.inverse_transform(batch_y)
-                
-                # 定义 pred 和 true，保持 GPU 张量
-                #pred = outputs
-                #true = batch_y
+                    shape = outputs.shape
+                    outputs = test_data.inverse_transform(outputs.squeeze(0)).reshape(shape)
+                    batch_y = test_data.inverse_transform(batch_y.squeeze(0)).reshape(shape)
 
-                #preds.append(pred)
-                #trues.append(true)
-                preds.append(outputs)
-                trues.append(batch_y)
+                pred = outputs
+                true = batch_y
 
+                preds.append(pred)
+                trues.append(true)
                 if i % 20 == 0:
-                    #input = batch_x.detach().cpu().numpy()
-                    input = batch_x
+                    input = batch_x.detach().cpu().numpy()
                     if test_data.scale and self.args.inverse:
-                        #shape = input.shape
-                        #input = test_data.inverse_transform(input.squeeze(0)).reshape(shape)
-                        input = test_data.inverse_transform(input)
-                    #gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
-                    #pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
-                    #visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
-                    gt = torch.cat((input[0, :, -1], batch_y[0, :, -1]), dim=0).cpu().numpy()
-                    pd = torch.cat((input[0, :, -1], outputs[0, :, -1]), dim=0).cpu().numpy()
+                        shape = input.shape
+                        input = test_data.inverse_transform(input.squeeze(0)).reshape(shape)
+                    gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
+                    pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
-        #preds = np.array(preds)
-        #trues = np.array(trues)
-        preds = torch.stack(preds)
-        trues = torch.stack(trues)
+        preds = np.array(preds)
+        trues = np.array(trues)
         print('test shape:', preds.shape, trues.shape)
-        #preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
-        #trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
-        preds = preds.view(-1, preds.shape[-2], preds.shape[-1])
-        trues = trues.view(-1, trues.shape[-2], trues.shape[-1])
+        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
+        trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
         print('test shape:', preds.shape, trues.shape)
 
         # result save
@@ -307,7 +328,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
-        mae, mse, rmse, mape, mspe = metric(preds, trues)# 需确保 metric 支持张量
+        mae, mse, rmse, mape, mspe = metric(preds, trues)
         print('mse:{}, mae:{}'.format(mse, mae))
         f = open("result_long_term_forecast.txt", 'a')
         f.write(setting + "  \n")
@@ -316,16 +337,11 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         f.write('\n')
         f.close()
 
-        #np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe]))
-        #np.save(folder_path + 'pred.npy', preds)
-        #np.save(folder_path + 'true.npy', trues)
-        # 保存指标，修复错误
-        np.save(folder_path + 'metrics.npy', np.array([mae.item(), mse.item(), rmse.item(), mape.item(), mspe.item()]))
-        np.save(folder_path + 'pred.npy', preds.cpu().numpy())
-        np.save(folder_path + 'true.npy', trues.cpu().numpy())
+        np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe]))
+        np.save(folder_path + 'pred.npy', preds)
+        np.save(folder_path + 'true.npy', trues)
 
         return
-
 
     def predict(self, setting, load=False):
         pred_data, pred_loader = self._get_data(flag='pred')
@@ -346,8 +362,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 batch_y_mark = batch_y_mark.float().to(self.device)
 
                 # decoder input
-                #dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
-                dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float().to(self.device)
+                dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
                 if self.args.use_amp:
@@ -363,14 +378,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                         outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 outputs = outputs.detach().cpu().numpy()
                 if pred_data.scale and self.args.inverse:
-                    #shape = outputs.shape
-                    #outputs = pred_data.inverse_transform(outputs.squeeze(0)).reshape(shape)
-                    outputs = pred_data.inverse_transform(outputs)
+                    shape = outputs.shape
+                    outputs = pred_data.inverse_transform(outputs.squeeze(0)).reshape(shape)
                 preds.append(outputs)
 
-        #preds = np.array(preds)
-        #preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
-        preds = torch.stack(preds).view(-1, preds.shape[-2], preds.shape[-1])
+        preds = np.array(preds)
+        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
 
         # result save
         folder_path = './results/' + setting + '/'
