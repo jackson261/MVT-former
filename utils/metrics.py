@@ -12,7 +12,7 @@ def CORR(pred, true):
     return (u / d).mean(dim=-1)
 
 def MAE(pred, true):
-    
+   
     return torch.mean(torch.abs(pred - true))
 
 
@@ -27,14 +27,14 @@ def RMSE(pred, true):
 
 
 def MAPE(pred, true):
-    
-    epsilon = 1e-5  # 避免除以零
+   
+    epsilon = 1e-5  
     return torch.mean(torch.abs((pred - true) / (true + epsilon)))
 
 
 def MSPE(pred, true):
-   
-    epsilon = 1e-5  # 避免除以零
+    
+    epsilon = 1e-5  
     return torch.mean(((pred - true) / (true + epsilon)) ** 2)
 
 
