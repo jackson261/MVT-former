@@ -2,7 +2,7 @@ import torch.nn as nn
 from .rope_attn import MHAWithRoPE
 
 class RoPEEncoderLayer(nn.Module):
-    """Pre-LN + RoPE自注意力 + FFN；返回 (x, None) 以兼容原 Encoder 接口"""
+   
     def __init__(self, d_model, n_heads, d_ff, dropout, activation="gelu"):
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
